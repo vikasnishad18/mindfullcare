@@ -4,7 +4,7 @@ import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { apiFetch } from "../lib/api";
 import { getSessionUser, isAdminUser } from "../lib/session";
-import { supabase } from "../lib/supabase";
+import { getSupabaseClient } from "../lib/supabase";
 
 function Login({ variant = "user" }) {
   const navigate = useNavigate();
@@ -27,7 +27,8 @@ function Login({ variant = "user" }) {
     e.preventDefault();
     setStatus({ loading: true, error: "", success: "" });
     try {
-      if (!process.env.REACT_APP_SUPABASE_URL || !process.env.REACT_APP_SUPABASE_ANON_KEY) {
+      const supabase = getSupabaseClient();
+      if (!supabase) {
         throw new Error("missing_supabase_env");
       }
 

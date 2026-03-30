@@ -110,6 +110,20 @@ npm start
 
 Open `http://localhost:3000`.
 
+### 7) Deploy (Render + Vercel)
+
+- **Backend (Render)**
+  - Set Render env vars using `server/.env.example` as a reference (do **not** commit real secrets).
+  - Ensure `DATABASE_URL` points to a reachable Supabase host (pooler is usually best).
+
+- **Frontend (Vercel)**
+  - This repo includes `vercel.json` so Vercel builds the React app from `client/` and enables SPA routing.
+  - Set Vercel env vars (Build + Runtime):
+    - `REACT_APP_SUPABASE_URL`
+    - `REACT_APP_SUPABASE_ANON_KEY`
+    - `REACT_APP_API_URL` (optional; defaults to `https://mindfullcare.onrender.com/api`)
+  - Redeploy after changing env vars (CRA bakes them at build time).
+
 ### Notes
 
 - Backend supports **SQLite** and **Postgres/Supabase** via `server/config/db.js`.
