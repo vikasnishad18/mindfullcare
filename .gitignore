@@ -4,6 +4,7 @@ node_modules/
 # env
 .env
 .env.*
+!.env.example
 
 # logs
 logs/
@@ -20,6 +21,11 @@ build/
 out/
 coverage/
 
+# local caches
+.npm-cache/
+client/.npm-cache/
+server/.npm-cache/
+
 # OS / editor
 .DS_Store
 Thumbs.db
@@ -31,3 +37,5 @@ Thumbs.db
 *.seed
 *.tgz
 
+# local databases
+server/database/*.db

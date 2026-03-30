@@ -32,7 +32,7 @@ async function updateExpert(id, { name, specialization, experience, image }) {
 
 async function deleteExpert(id) {
   const result = await query("DELETE FROM experts WHERE id = ?", [id]);
-  return { affectedRows: result.affectedRows || 0 };
+  return { affectedRows: result.affectedRows || 0, changes: result.changes || 0 };
 }
 
 module.exports = {
@@ -42,4 +42,3 @@ module.exports = {
   updateExpert,
   deleteExpert,
 };
-

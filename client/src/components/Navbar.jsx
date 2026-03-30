@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "react-router-dom";
 import { getSessionUser, isAdminUser } from "../lib/session";
+import { supabase } from "../lib/supabase";
 
 function Navbar() {
   const navigate = useNavigate();
@@ -27,6 +28,7 @@ function Navbar() {
                 onClick={() => {
                   localStorage.removeItem("mindfullcare_token");
                   localStorage.removeItem("mindfullcare_user");
+                  supabase.auth.signOut().catch(() => {});
                   navigate("/");
                 }}
               >

@@ -1,95 +1,205 @@
-const mysql = require("mysql2/promise");
+const path = require("path");
+const sqlite3 = require("sqlite3");
+const { open } = require("sqlite");
+const { Pool } = require("pg");
+const dns = require("dns");
 
-let pool;
+let sqliteDb;
+let pgPool;
 
-function isTruthyEnv(value) {
-  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+function getProvider() {
+  const explicit = String(process.env.DB_PROVIDER || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  if (process.env.DATABASE_URL) return "postgres";
+  return "sqlite";
 }
 
-function poolOptions() {
-  return {
-    waitForConnections: true,
-    connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
-  };
+function isSelectLike(sql) {
+  return /^\s*(select|with|pragma)\b/i.test(String(sql || ""));
 }
 
-function parseMysqlUrl(databaseUrl) {
-  const url = new URL(databaseUrl);
-  const dbName = url.pathname ? url.pathname.replace(/^\//, "") : "";
-  if (!dbName) throw new Error("DATABASE_URL missing database name");
+function convertQmToPgPlaceholders(sql) {
+  let i = 0;
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
 
-  const sslParam =
-    url.searchParams.get("ssl") ||
-    url.searchParams.get("ssl-mode") ||
-    url.searchParams.get("sslmode");
+  for (let idx = 0; idx < sql.length; idx++) {
+    const ch = sql[idx];
 
-  const sslEnabled =
-    isTruthyEnv(process.env.DB_SSL) ||
-    ["required", "true", "1", "yes", "on"].includes(
-      String(sslParam || "").toLowerCase()
-    );
+    if (ch === "'" && !inDouble) {
+      // Handle escaped '' inside strings
+      const next = sql[idx + 1];
+      if (inSingle && next === "'") {
+        out += "''";
+        idx++;
+        continue;
+      }
+      inSingle = !inSingle;
+      out += ch;
+      continue;
+    }
 
-  return {
-    host: url.hostname,
-    port: Number(url.port || 3306),
-    user: decodeURIComponent(url.username || ""),
-    password: decodeURIComponent(url.password || ""),
-    database: dbName,
-    ...(sslEnabled ? { ssl: {} } : null),
-  };
-}
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      out += ch;
+      continue;
+    }
 
-function createPoolFromEnv() {
-  const databaseUrl =
-    process.env.DATABASE_URL || process.env.MYSQL_URL || process.env.DB_URL;
+    if (ch === "?" && !inSingle && !inDouble) {
+      i += 1;
+      out += `$${i}`;
+      continue;
+    }
 
-  if (databaseUrl) {
-    return mysql.createPool({ ...parseMysqlUrl(databaseUrl), ...poolOptions() });
+    out += ch;
   }
 
-  const host = process.env.DB_HOST;
-  const user = process.env.DB_USER;
-  const database = process.env.DB_NAME;
+  return out;
+}
 
-  const missing = [];
-  if (!host) missing.push("DB_HOST");
-  if (!user) missing.push("DB_USER");
-  if (!database) missing.push("DB_NAME");
-  if (missing.length) {
-    throw new Error(
-      `Missing DB env vars: ${missing.join(", ")} (or set DATABASE_URL)`
-    );
+function withReturningId(sql) {
+  const trimmed = String(sql || "").trim().replace(/;+\s*$/, "");
+  if (!/^\s*insert\b/i.test(trimmed)) return { sql: trimmed, added: false };
+  if (/\breturning\b/i.test(trimmed)) return { sql: trimmed, added: false };
+  return { sql: `${trimmed} RETURNING id`, added: true };
+}
+
+function maskConnectionString(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    if (url.password) url.password = "******";
+    return url.toString();
+  } catch {
+    return "[invalid DATABASE_URL]";
+  }
+}
+
+async function preflightDns(connectionString) {
+  let hostname;
+  try {
+    hostname = new URL(connectionString).hostname;
+  } catch {
+    throw new Error("Invalid DATABASE_URL (must be a valid URL)");
   }
 
-  return mysql.createPool({
-    host,
-    port: Number(process.env.DB_PORT || 3306),
-    user,
-    password: process.env.DB_PASSWORD,
-    database,
-    ...poolOptions(),
+  if (!hostname) throw new Error("Invalid DATABASE_URL (missing hostname)");
+
+  try {
+    const results = await dns.promises.lookup(hostname, { all: true });
+    const families = new Set(results.map((r) => r.family));
+
+    const nodeOptions = String(process.env.NODE_OPTIONS || "");
+    const forcesIpv4First = nodeOptions.includes("--dns-result-order=ipv4first");
+
+    if (!families.has(4) && families.has(6) && forcesIpv4First) {
+      const safe = maskConnectionString(connectionString);
+      throw new Error(
+        `Database host "${hostname}" resolves only to IPv6 (AAAA), but NODE_OPTIONS forces IPv4-first. ` +
+          `Remove "--dns-result-order=ipv4first" or use an IPv4-capable DB hostname. ` +
+          `DATABASE_URL=${safe}`
+      );
+    }
+  } catch (err) {
+    if (err && (err.code === "ENOTFOUND" || err.code === "EAI_AGAIN")) {
+      const safe = maskConnectionString(connectionString);
+      throw new Error(
+        `DNS lookup failed for database host "${hostname}" (${err.code}). ` +
+          `This is usually a network/DNS/VPN/firewall issue or a typo in DATABASE_URL. ` +
+          `DATABASE_URL=${safe}`
+      );
+    }
+    throw err;
+  }
+}
+
+async function connectDB() {
+  const provider = getProvider();
+
+  if (provider === "postgres" || provider === "supabase") {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("Missing DATABASE_URL for Postgres/Supabase connection");
+    }
+
+    await preflightDns(connectionString);
+
+    pgPool = new Pool({ connectionString });
+    try {
+      await pgPool.query("select 1 as ok");
+    } catch (err) {
+      if (err && err.code === "ENOTFOUND") {
+        const safe = maskConnectionString(connectionString);
+        throw new Error(
+          `Unable to resolve database host "${err.hostname || "unknown"}" (ENOTFOUND). ` +
+            `Check your network/DNS and verify DATABASE_URL. DATABASE_URL=${safe}`
+        );
+      }
+      throw err;
+    }
+
+    console.log("Postgres connected");
+    return;
+  }
+
+  sqliteDb = await open({
+    filename: process.env.SQLITE_FILENAME
+      ? path.resolve(process.env.SQLITE_FILENAME)
+      : path.join(__dirname, "../database/mindfullcare.db"),
+    driver: sqlite3.Database,
   });
+
+  console.log("SQLite connected");
 }
 
-function getPool() {
-  if (!pool) {
-    pool = createPoolFromEnv();
+function getDB() {
+  const provider = getProvider();
+  return provider === "postgres" || provider === "supabase" ? pgPool : sqliteDb;
+}
 
-    pool
-      .getConnection()
-      .then((conn) => {
-        conn.release();
-        console.log("MySQL connected");
-      })
-      .catch((err) => console.error("DB error:", err?.message || err));
+async function closeDB() {
+  const provider = getProvider();
+  if (provider === "postgres" || provider === "supabase") {
+    if (pgPool) await pgPool.end();
+    pgPool = null;
+    return;
   }
 
-  return pool;
+  if (sqliteDb) await sqliteDb.close();
+  sqliteDb = null;
 }
 
 async function query(sql, params = []) {
-  const [rows] = await getPool().execute(sql, params);
-  return rows;
+  const provider = getProvider();
+
+  if (provider === "postgres" || provider === "supabase") {
+    if (!pgPool) throw new Error("Postgres pool not initialized (call connectDB first)");
+
+    const { sql: sqlWithReturning, added } = withReturningId(sql);
+    const converted = convertQmToPgPlaceholders(sqlWithReturning);
+
+    const result = await pgPool.query(converted, params);
+
+    if (isSelectLike(sqlWithReturning)) return result.rows;
+
+    const insertId = added ? result.rows?.[0]?.id : undefined;
+    return {
+      insertId,
+      affectedRows: result.rowCount,
+      changes: result.rowCount,
+    };
+  }
+
+  if (!sqliteDb) throw new Error("SQLite db not initialized (call connectDB first)");
+
+  if (isSelectLike(sql)) return sqliteDb.all(sql, params);
+
+  const res = await sqliteDb.run(sql, params);
+  return {
+    insertId: res.lastID,
+    affectedRows: res.changes,
+    changes: res.changes,
+  };
 }
 
-module.exports = { getPool, query };
+module.exports = { connectDB, getDB, closeDB, query, getProvider };

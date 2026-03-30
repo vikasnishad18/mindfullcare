@@ -4,6 +4,7 @@ import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { apiFetch } from "../lib/api";
 import { getSessionUser, isAdminUser } from "../lib/session";
+import { supabase } from "../lib/supabase";
 
 function Login({ variant = "user" }) {
   const navigate = useNavigate();
@@ -26,35 +27,55 @@ function Login({ variant = "user" }) {
     e.preventDefault();
     setStatus({ loading: true, error: "", success: "" });
     try {
-      if (isAdminVariant) {
-        const data = await apiFetch("/auth/admin/login", {
-          method: "POST",
-          body: JSON.stringify({ email: form.email, password: form.password }),
-        });
+      if (!process.env.REACT_APP_SUPABASE_URL || !process.env.REACT_APP_SUPABASE_ANON_KEY) {
+        throw new Error("missing_supabase_env");
+      }
 
-        localStorage.setItem("mindfullcare_token", data.token);
-        localStorage.setItem("mindfullcare_user", JSON.stringify(data.user));
-        setStatus({ loading: false, error: "", success: "Signed in." });
-        navigate("/admin");
+      const email = String(form.email || "").trim().toLowerCase();
+      const password = String(form.password || "");
+
+      const authResult =
+        !isAdminVariant && mode === "register"
+          ? await supabase.auth.signUp({
+              email,
+              password,
+              options: { data: { name: String(form.name || "").trim() } },
+            })
+          : await supabase.auth.signInWithPassword({ email, password });
+
+      if (authResult.error) throw authResult.error;
+
+      const session = authResult.data?.session || null;
+      if (!session?.access_token) {
+        setStatus({
+          loading: false,
+          error: "",
+          success: "Account created. Please check your email to confirm, then login.",
+        });
         return;
       }
 
-      const payload =
-        mode === "register"
-          ? { name: form.name, email: form.email, password: form.password }
-          : { email: form.email, password: form.password };
+      localStorage.setItem("mindfullcare_token", session.access_token);
 
-      const data = await apiFetch(`/auth/${mode === "register" ? "register" : "login"}`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      const me = await apiFetch("/auth/me");
+      localStorage.setItem("mindfullcare_user", JSON.stringify(me.user));
 
-      localStorage.setItem("mindfullcare_token", data.token);
-      localStorage.setItem("mindfullcare_user", JSON.stringify(data.user));
+      if (isAdminVariant && !isAdminUser(me.user)) {
+        localStorage.removeItem("mindfullcare_token");
+        localStorage.removeItem("mindfullcare_user");
+        await supabase.auth.signOut();
+        setStatus({ loading: false, error: "admin_only", success: "" });
+        return;
+      }
+
       setStatus({ loading: false, error: "", success: "Signed in." });
-      navigate(isAdminUser(data.user) ? "/admin" : "/dashboard");
+      navigate(isAdminUser(me.user) ? "/admin" : "/dashboard");
     } catch (err) {
-      setStatus({ loading: false, error: err.message || "Login failed.", success: "" });
+      const msg =
+        err?.message === "missing_supabase_env"
+          ? "Missing REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY."
+          : err?.message || "Login failed.";
+      setStatus({ loading: false, error: msg, success: "" });
     }
   };
 

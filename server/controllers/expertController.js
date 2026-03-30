@@ -8,15 +8,16 @@ const {
 async function getExperts(req, res, next) {
   try {
     const experts = await listExperts();
-    return res.json({ experts });
+    res.json({ experts });
   } catch (err) {
-    return next(err);
+    next(err);
   }
 }
 
 async function addExpert(req, res, next) {
   try {
     const { name, specialization, experience, image } = req.body || {};
+
     if (!name || !specialization) {
       return res.status(400).json({ error: "missing_fields" });
     }
@@ -28,18 +29,22 @@ async function addExpert(req, res, next) {
       image: image ? String(image) : null,
     });
 
-    return res.status(201).json({ expert });
+    res.status(201).json({ expert });
   } catch (err) {
-    return next(err);
+    next(err);
   }
 }
 
 async function editExpert(req, res, next) {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid_id" });
+
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
 
     const { name, specialization, experience, image } = req.body || {};
+
     if (!name || !specialization) {
       return res.status(400).json({ error: "missing_fields" });
     }
@@ -51,25 +56,40 @@ async function editExpert(req, res, next) {
       image: image ? String(image) : null,
     });
 
-    if (!expert) return res.status(404).json({ error: "not_found" });
-    return res.json({ expert });
+    if (!expert) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    res.json({ expert });
   } catch (err) {
-    return next(err);
+    next(err);
   }
 }
 
 async function removeExpert(req, res, next) {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid_id" });
+
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
 
     const result = await deleteExpert(id);
-    if (!result.affectedRows) return res.status(404).json({ error: "not_found" });
-    return res.json({ ok: true });
+
+    // SQLite returns "changes" instead of affectedRows
+    if (!result || result.changes === 0) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    res.json({ ok: true });
   } catch (err) {
-    return next(err);
+    next(err);
   }
 }
 
-module.exports = { getExperts, addExpert, editExpert, removeExpert };
-
+module.exports = {
+  getExperts,
+  addExpert,
+  editExpert,
+  removeExpert,
+};

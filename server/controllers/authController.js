@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { createUser, findByEmail } = require("../models/userModel");
+const { getProvider, query } = require("../config/db");
 
 function signToken(user) {
   const secret = process.env.JWT_SECRET || "dev_secret";
@@ -13,6 +14,11 @@ function signToken(user) {
 
 async function register(req, res, next) {
   try {
+    const provider = getProvider();
+    if (provider === "postgres" || provider === "supabase") {
+      return res.status(410).json({ error: "use_supabase_auth" });
+    }
+
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
       return res.status(400).json({ error: "missing_fields" });
@@ -40,6 +46,11 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
+    const provider = getProvider();
+    if (provider === "postgres" || provider === "supabase") {
+      return res.status(410).json({ error: "use_supabase_auth" });
+    }
+
     const { email, password } = req.body || {};
     if (!email || !password) {
       return res.status(400).json({ error: "missing_fields" });
@@ -68,6 +79,11 @@ async function login(req, res, next) {
 
 async function adminLogin(req, res, next) {
   try {
+    const provider = getProvider();
+    if (provider === "postgres" || provider === "supabase") {
+      return res.status(410).json({ error: "use_supabase_auth" });
+    }
+
     const { email, password } = req.body || {};
     if (!email || !password) {
       return res.status(400).json({ error: "missing_fields" });
@@ -99,4 +115,35 @@ async function adminLogin(req, res, next) {
   }
 }
 
-module.exports = { register, login, adminLogin };
+async function me(req, res, next) {
+  try {
+    if (!req.user?.id) return res.status(401).json({ error: "missing_token" });
+
+    const provider = getProvider();
+    if (provider === "postgres" || provider === "supabase") {
+      const rows = await query("SELECT id, name, role FROM profiles WHERE id = ? LIMIT 1", [
+        String(req.user.id),
+      ]);
+      const profile = rows?.[0];
+      if (!profile) {
+        return res.status(404).json({ error: "profile_not_found" });
+      }
+      return res.json({
+        user: { id: profile.id, name: profile.name, email: req.user.email, role: profile.role },
+      });
+    }
+
+    return res.json({
+      user: {
+        id: req.user.id,
+        name: req.user.name,
+        email: req.user.email,
+        role: req.user.role || "user",
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+module.exports = { register, login, adminLogin, me };

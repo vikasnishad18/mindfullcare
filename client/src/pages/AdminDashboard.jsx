@@ -6,14 +6,31 @@ import { apiFetch } from "../lib/api";
 import { getSessionUser, isAdminUser } from "../lib/session";
 
 const emptyForm = { name: "", specialization: "", experience: 0, image: "" };
+const bookingStatuses = ["requested", "confirmed", "rescheduled", "completed", "cancelled"];
+
+function formatBookingLine(booking) {
+  const date = booking?.session_date || "";
+  const time = String(booking?.session_time || "").slice(0, 5);
+  return `${date}${time ? ` • ${time}` : ""}`;
+}
 
 function AdminDashboard() {
   const navigate = useNavigate();
   const user = useMemo(() => getSessionUser(), []);
   const [experts, setExperts] = useState([]);
+  const [bookings, setBookings] = useState([]);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [status, setStatus] = useState({ loading: true, saving: false, error: "", success: "" });
+  const [bookingEdit, setBookingEdit] = useState({
+    id: null,
+    therapistName: "",
+    date: "",
+    time: "",
+    status: "requested",
+    saving: false,
+    error: "",
+  });
 
   useEffect(() => {
     if (!user) {
@@ -27,9 +44,10 @@ function AdminDashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await apiFetch("/experts");
+        const [expertData, bookingData] = await Promise.all([apiFetch("/experts"), apiFetch("/bookings")]);
         if (cancelled) return;
-        setExperts(data.experts || []);
+        setExperts(expertData.experts || []);
+        setBookings(bookingData.bookings || []);
         setStatus((s) => ({ ...s, loading: false, error: "" }));
       } catch (err) {
         if (cancelled) return;
@@ -42,8 +60,9 @@ function AdminDashboard() {
   }, [navigate, user]);
 
   const reload = async () => {
-    const data = await apiFetch("/experts");
-    setExperts(data.experts || []);
+    const [expertData, bookingData] = await Promise.all([apiFetch("/experts"), apiFetch("/bookings")]);
+    setExperts(expertData.experts || []);
+    setBookings(bookingData.bookings || []);
   };
 
   const onChange = (e) => {
@@ -104,6 +123,53 @@ function AdminDashboard() {
       setStatus((s) => ({ ...s, success: "Expert deleted." }));
     } catch (err) {
       setStatus((s) => ({ ...s, error: err.message || "Delete failed." }));
+    }
+  };
+
+  const startBookingEdit = (booking) => {
+    setBookingEdit({
+      id: booking.id,
+      therapistName: booking.therapist_name || "",
+      date: booking.session_date || "",
+      time: String(booking.session_time || "").slice(0, 5),
+      status: String(booking.status || "requested").toLowerCase(),
+      saving: false,
+      error: "",
+    });
+    setStatus((s) => ({ ...s, error: "", success: "" }));
+  };
+
+  const closeBookingEdit = () => {
+    setBookingEdit({
+      id: null,
+      therapistName: "",
+      date: "",
+      time: "",
+      status: "requested",
+      saving: false,
+      error: "",
+    });
+  };
+
+  const saveBookingEdit = async (e) => {
+    e.preventDefault();
+    if (!bookingEdit.id) return;
+    setBookingEdit((b) => ({ ...b, saving: true, error: "" }));
+    try {
+      await apiFetch(`/bookings/${bookingEdit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          therapistName: bookingEdit.therapistName,
+          date: bookingEdit.date,
+          time: bookingEdit.time,
+          status: bookingEdit.status,
+        }),
+      });
+      setStatus((s) => ({ ...s, success: "Booking updated." }));
+      closeBookingEdit();
+      await reload();
+    } catch (err) {
+      setBookingEdit((b) => ({ ...b, saving: false, error: err.message || "Update failed." }));
     }
   };
 
@@ -202,6 +268,118 @@ function AdminDashboard() {
                           Delete
                         </button>
                       </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="surface fade-up" style={{ padding: 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <h3 style={{ marginTop: 0 }}>Bookings</h3>
+                <button className="btn btn--ghost" type="button" onClick={reload} disabled={status.loading}>
+                  Refresh
+                </button>
+              </div>
+
+              {status.loading ? (
+                <p>Loading...</p>
+              ) : bookings.length === 0 ? (
+                <p>No bookings yet.</p>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {bookings.map((b) => (
+                    <div
+                      key={b.id}
+                      className="surface"
+                      style={{ padding: 14, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700 }}>
+                          {b.therapist_name} <span style={{ opacity: 0.6, fontWeight: 500 }}>• #{b.id}</span>
+                        </div>
+                        <div style={{ opacity: 0.85 }}>{formatBookingLine(b)}</div>
+                        <div style={{ opacity: 0.75, fontSize: 13 }}>
+                          {b.name} • {b.email}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span className="chip">{b.status || "requested"}</span>
+                        <button className="btn btn--ghost" type="button" onClick={() => startBookingEdit(b)}>
+                          Manage
+                        </button>
+                      </div>
+
+                      {bookingEdit.id === b.id ? (
+                        <form
+                          onSubmit={saveBookingEdit}
+                          style={{ width: "100%", marginTop: 10, display: "grid", gap: 10 }}
+                        >
+                          <div style={{ display: "grid", gap: 10, gridTemplateColumns: "2fr 1fr 1fr 1fr" }}>
+                            <div className="field" style={{ margin: 0 }}>
+                              <div className="label">Therapist</div>
+                              <input
+                                className="control"
+                                value={bookingEdit.therapistName}
+                                onChange={(e) =>
+                                  setBookingEdit((prev) => ({ ...prev, therapistName: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+
+                            <div className="field" style={{ margin: 0 }}>
+                              <div className="label">Date</div>
+                              <input
+                                className="control"
+                                type="date"
+                                value={bookingEdit.date}
+                                onChange={(e) => setBookingEdit((prev) => ({ ...prev, date: e.target.value }))}
+                                required
+                              />
+                            </div>
+
+                            <div className="field" style={{ margin: 0 }}>
+                              <div className="label">Time</div>
+                              <input
+                                className="control"
+                                type="time"
+                                value={bookingEdit.time}
+                                onChange={(e) => setBookingEdit((prev) => ({ ...prev, time: e.target.value }))}
+                                required
+                              />
+                            </div>
+
+                            <div className="field" style={{ margin: 0 }}>
+                              <div className="label">Status</div>
+                              <select
+                                className="control"
+                                value={bookingEdit.status}
+                                onChange={(e) => setBookingEdit((prev) => ({ ...prev, status: e.target.value }))}
+                                required
+                              >
+                                {bookingStatuses.map((s) => (
+                                  <option key={s} value={s}>
+                                    {s}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {bookingEdit.error ? <div className="notice notice--error">{bookingEdit.error}</div> : null}
+
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            <button className="btn btn--primary" disabled={bookingEdit.saving}>
+                              {bookingEdit.saving ? "Saving..." : "Save"}
+                            </button>
+                            <button className="btn btn--ghost" type="button" onClick={closeBookingEdit}>
+                              Close
+                            </button>
+                          </div>
+                        </form>
+                      ) : null}
                     </div>
                   ))}
                 </div>
