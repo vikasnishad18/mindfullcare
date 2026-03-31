@@ -74,7 +74,7 @@ function Login({ variant = "user" }) {
     } catch (err) {
       const msg =
         err?.message === "missing_supabase_env"
-          ? "Missing REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY."
+          ? "Missing Supabase env (REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY or VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)."
           : err?.message || "Login failed.";
       setStatus({ loading: false, error: msg, success: "" });
     }
