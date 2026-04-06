@@ -6,6 +6,35 @@ import { apiFetch } from "../lib/api";
 import { getSessionUser, isAdminUser } from "../lib/session";
 import { getSupabaseClient } from "../lib/supabase";
 
+const SIGNUP_EMAIL_COOLDOWN_MS = 2 * 60 * 1000;
+
+function getSignupEmailCooldownKey(email) {
+  return `mindfullcare_signup_email_sent:${String(email || "").trim().toLowerCase()}`;
+}
+
+function toFriendlyAuthError(err) {
+  const rawMessage = String(err?.message || "");
+  const msg = rawMessage.toLowerCase();
+
+  if (err?.message === "missing_supabase_env") {
+    return "Missing Supabase env (REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY or VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).";
+  }
+
+  if (msg.includes("email rate limit exceeded") || (msg.includes("rate limit") && msg.includes("email"))) {
+    return "Email rate limit exceeded (Supabase). A confirmation email was requested too many times. Wait a few minutes, check spam, then try again. If you already registered, use Login instead of Register.";
+  }
+
+  if (msg.includes("user already registered") || msg.includes("email already in use")) {
+    return "That email is already registered. Use Login instead.";
+  }
+
+  if (msg.includes("invalid login credentials")) {
+    return "Invalid email or password.";
+  }
+
+  return rawMessage || "Login failed.";
+}
+
 function Login({ variant = "user" }) {
   const navigate = useNavigate();
   const isAdminVariant = variant === "admin";
@@ -35,6 +64,19 @@ function Login({ variant = "user" }) {
       const email = String(form.email || "").trim().toLowerCase();
       const password = String(form.password || "");
 
+      if (!isAdminVariant && mode === "register") {
+        const key = getSignupEmailCooldownKey(email);
+        const lastSent = Number(localStorage.getItem(key) || 0);
+        if (lastSent && Date.now() - lastSent < SIGNUP_EMAIL_COOLDOWN_MS) {
+          setStatus({
+            loading: false,
+            error: "",
+            success: "Confirmation email already requested recently. Please check your inbox/spam and wait a bit before trying again.",
+          });
+          return;
+        }
+      }
+
       const authResult =
         !isAdminVariant && mode === "register"
           ? await supabase.auth.signUp({
@@ -48,6 +90,9 @@ function Login({ variant = "user" }) {
 
       const session = authResult.data?.session || null;
       if (!session?.access_token) {
+        if (!isAdminVariant && mode === "register") {
+          localStorage.setItem(getSignupEmailCooldownKey(email), String(Date.now()));
+        }
         setStatus({
           loading: false,
           error: "",
@@ -72,11 +117,7 @@ function Login({ variant = "user" }) {
       setStatus({ loading: false, error: "", success: "Signed in." });
       navigate(isAdminUser(me.user) ? "/admin" : "/dashboard");
     } catch (err) {
-      const msg =
-        err?.message === "missing_supabase_env"
-          ? "Missing Supabase env (REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY or VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)."
-          : err?.message || "Login failed.";
-      setStatus({ loading: false, error: msg, success: "" });
+      setStatus({ loading: false, error: toFriendlyAuthError(err), success: "" });
     }
   };
 

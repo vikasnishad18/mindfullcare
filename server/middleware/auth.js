@@ -3,15 +3,35 @@ const { createRemoteJWKSet, jwtVerify } = require("jose");
 const { getProvider, query } = require("../config/db");
 
 function parseBearerToken(req) {
-  const header = req.headers.authorization || "";
-  const [kind, token] = header.split(" ");
-  if (kind !== "Bearer" || !token) return null;
-  return token;
+  const header = String(req.headers.authorization || "").trim();
+  if (!header) return null;
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  const token = String(match[1] || "").trim();
+  return token || null;
+}
+
+function normalizeSupabaseIssuer(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const noTrailingSlash = raw.replace(/\/+$/, "");
+
+  if (/\/auth\/v1$/i.test(noTrailingSlash)) return noTrailingSlash;
+  if (/\/auth\/v$/i.test(noTrailingSlash)) return `${noTrailingSlash}1`;
+  if (/\/auth$/i.test(noTrailingSlash)) return `${noTrailingSlash}/v1`;
+
+  return `${noTrailingSlash}/auth/v1`;
 }
 
 function getSupabaseIssuer() {
-  if (process.env.SUPABASE_JWT_ISSUER) return String(process.env.SUPABASE_JWT_ISSUER);
-  if (process.env.SUPABASE_URL) return `${String(process.env.SUPABASE_URL).replace(/\/+$/, "")}/auth/v1`;
+  const fromEnv = normalizeSupabaseIssuer(process.env.SUPABASE_JWT_ISSUER);
+  if (fromEnv) return fromEnv;
+
+  const supabaseUrl = String(process.env.SUPABASE_URL || "").trim();
+  const fromUrl = normalizeSupabaseIssuer(supabaseUrl);
+  if (fromUrl) return fromUrl;
+
   return null;
 }
 
@@ -20,7 +40,11 @@ function getJWKS() {
   if (jwks) return jwks;
   const issuer = getSupabaseIssuer();
   if (!issuer) return null;
-  jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
+  try {
+    jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
+  } catch {
+    jwks = null;
+  }
   return jwks;
 }
 
@@ -29,9 +53,16 @@ async function decodeSupabaseToken(token) {
   const keySet = getJWKS();
   if (!issuer || !keySet) throw new Error("supabase_auth_not_configured");
 
+  const audience = process.env.SUPABASE_JWT_AUDIENCE
+    ? String(process.env.SUPABASE_JWT_AUDIENCE)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : "authenticated";
+
   const { payload } = await jwtVerify(token, keySet, {
     issuer,
-    audience: "authenticated",
+    audience,
   });
 
   const userMetadata = payload.user_metadata || payload.userMetadata || {};

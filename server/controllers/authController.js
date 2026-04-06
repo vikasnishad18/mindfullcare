@@ -121,15 +121,43 @@ async function me(req, res, next) {
 
     const provider = getProvider();
     if (provider === "postgres" || provider === "supabase") {
-      const rows = await query("SELECT id, name, role FROM profiles WHERE id = ? LIMIT 1", [
-        String(req.user.id),
-      ]);
-      const profile = rows?.[0];
-      if (!profile) {
-        return res.status(404).json({ error: "profile_not_found" });
+      const id = String(req.user.id);
+
+      try {
+        const rows = await query("SELECT id, name, role FROM profiles WHERE id = ? LIMIT 1", [id]);
+        const profile = rows?.[0] || null;
+
+        if (!profile) {
+          // If the trigger didn't create the profile (or it was deleted), create a minimal one.
+          const fallbackName = String(req.user.name || req.user.email || "").trim() || null;
+          await query(
+            `INSERT INTO profiles (id, name, role)
+             VALUES (?, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET name = COALESCE(EXCLUDED.name, profiles.name)`,
+            [id, fallbackName, "user"]
+          );
+
+          const rows2 = await query("SELECT id, name, role FROM profiles WHERE id = ? LIMIT 1", [id]);
+          const created = rows2?.[0] || null;
+          if (created) {
+            return res.json({
+              user: { id: created.id, name: created.name, email: req.user.email, role: created.role },
+            });
+          }
+        }
+
+        if (profile) {
+          return res.json({
+            user: { id: profile.id, name: profile.name, email: req.user.email, role: profile.role },
+          });
+        }
+      } catch (err) {
+        // If profiles table isn't available for some reason, fall back to JWT claims.
+        console.warn("Auth /me: profile lookup failed, falling back to token claims:", err?.message || err);
       }
+
       return res.json({
-        user: { id: profile.id, name: profile.name, email: req.user.email, role: profile.role },
+        user: { id, name: req.user.name || null, email: req.user.email || null, role: "user" },
       });
     }
 
